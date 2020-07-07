@@ -1,4 +1,4 @@
-vowels = ['a','e','i','o','u']
+vowels = list("aeiou")
 word = input("Please input the word you want to check:")
 found = {}
 for letter in word:
