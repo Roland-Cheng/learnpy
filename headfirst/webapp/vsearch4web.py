@@ -1,27 +1,35 @@
-from flask import Flask, render_template, request, escape
+from flask import Flask, render_template, request, session, copy_current_request_context
+from DBcm import UseDatabase, ConnectionError
+from checker import check_logged_in
+from threading import Thread
 
 
 def search4letters(phrase: str, letters: str = 'aeiou') -> set:
     return set(letters).intersection(set(phrase))
 
 
-def log_request(req: 'flask_request', res: str) -> None:
-    with open('vsearch.log', 'a') as log:
-        print(req.form, file=log, end='|')
-        print(req.remote_addr, file=log, end='|')
-        print(req.user_agent, file=log, end='|')
-        print(res, file=log)
-
-
 app = Flask(__name__)
+app.config['dbconfig'] = {'host': '127.0.0.1', 'user': 'vsearch',
+                          'password': 'vsearchpasswd', 'database': 'vsearchlogDB', }
+app.secret_key = 'password'
 
 
 @app.route('/search4', methods=['POST'])
 def do_search() -> 'html':
+    @copy_current_request_context
+    def log_request(req: 'flask_request', res: str) -> None:
+        with UseDatabase(app.config['dbconfig']) as cursor:
+            _SQL = """insert into log (phrase, letters, ip, browser_string, results) values (%s,%s,%s,%s,%s)"""
+            cursor.execute(_SQL, (req.form['phrase'], req.form['letters'],
+                                  req.remote_addr, req.user_agent.browser, res))
     phrase = request.form['phrase']
     letters = request.form['letters']
     results = search4letters(phrase, letters)
-    log_request(request, results)
+    try:
+        t = Thread(target=log_request, args=(request, str(results)))
+        t.start()
+    except Exception as err:
+        print('Something went wrong:', str(err))
     return render_template(
         'results.html',
         the_title='the results',
@@ -38,21 +46,36 @@ def entry_page() -> 'html':
 
 
 @app.route('/viewlog')
+@check_logged_in
 def log_page() -> 'html':
-    contents = []
-    with open('vsearch.log', 'r') as log:
-        for line in log:
-            contents.append([])
-            for item in line:
-                contents[-1].append(escape(item))
-    titles = ('Form Data', 'Remote_Addr', 'User_agent', 'Resulta')
-    return render_template(
-        'viewlog.html',
-        the_title='view log',
-        the_row_title=titles,
-        the_data=contents,
-    )
-    return contents
+    try:
+        with UseDatabase(app.config['dbconfig']) as cursor:
+            _SQL = """select phrase,letters,ip,browser_string,results from log"""
+            cursor.execute(_SQL)
+            contents = cursor.fetchall()
+        titles = ('Phrase', 'Letters', 'Remote_Addr', 'User_agent', 'Results')
+        return render_template(
+            'viewlog.html',
+            the_title='view log',
+            the_row_titles=titles,
+            the_data=contents,
+        )
+    except ConnectionError as err:
+        print('Is your database switched on? Error:', str(err))
+    except Exception as err:
+        print('Something went wrong:', str(err))
+
+
+@app.route('/login')
+def do_login() -> str:
+    session['logged_in'] = True
+    return 'You have logged in successfully.'
+
+
+@app.route('/logout')
+def do_logout() -> str:
+    session.pop('logged_in')
+    return 'You have logged out successfully.'
 
 
 if __name__ == '__main__':
